@@ -1,5 +1,6 @@
 import { getSnapshot, getBranches } from "../lib/airtable";
 import { fmtCurrency, fmtNumber, fmtDate, fmtLag } from "../lib/format";
+import ExportImportBar from "./components/ExportImportBar";
 
 export const revalidate = 60;
 
@@ -127,6 +128,8 @@ export default async function Page() {
             : "—"}
         </div>
       </div>
+
+      <ExportImportBar />
 
       {error ? (
         <div
