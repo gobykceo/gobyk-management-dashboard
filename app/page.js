@@ -1,6 +1,13 @@
-import { getSnapshot, getBranches } from "../lib/airtable";
+import {
+  getSnapshot,
+  getAvailableMonths,
+  getBranchesForMonth,
+  summarizeMonth,
+  currentYyyyMM,
+} from "../lib/airtable";
 import { fmtCurrency, fmtNumber, fmtDate, fmtLag } from "../lib/format";
 import ExportImportBar from "./components/ExportImportBar";
+import MonthSelect from "./components/MonthSelect";
 
 export const revalidate = 60;
 
@@ -10,6 +17,14 @@ const PAGE_BG = "#000000";
 const GREEN = "#22C55E";
 const BORDER = "#2A2D38";
 const MUTED = "#8A8D98";
+
+function monthLabel(yyyyMM) {
+  const [y, m] = yyyyMM.split("-").map(Number);
+  return new Date(y, m - 1, 1).toLocaleString("en-IN", {
+    month: "long",
+    year: "numeric",
+  });
+}
 
 function StatBox({ label, value, sub }) {
   return (
@@ -42,16 +57,26 @@ function StatBox({ label, value, sub }) {
   );
 }
 
-export default async function Page() {
+export default async function Page({ searchParams }) {
+  const params = (await searchParams) || {};
+  const selectedMonth = params.month || currentYyyyMM();
+
   let snapshot = {};
   let branches = [];
+  let availableMonths = [selectedMonth];
   let error = null;
 
   try {
-    [snapshot, branches] = await Promise.all([getSnapshot(), getBranches()]);
+    [snapshot, branches, availableMonths] = await Promise.all([
+      getSnapshot(),
+      getBranchesForMonth(selectedMonth),
+      getAvailableMonths(),
+    ]);
   } catch (e) {
     error = e.message;
   }
+
+  const summary = summarizeMonth(branches);
 
   const columns = [
     { key: "Branch Name", label: "Branch", fmt: (v) => v || "—" },
@@ -129,7 +154,31 @@ export default async function Page() {
         </div>
       </div>
 
-      <ExportImportBar />
+      {/* Month selector — every figure below is scoped strictly to this
+          month; a branch with no report in it shows blank, never another
+          month's data. */}
+      <form
+        method="GET"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          marginBottom: 16,
+          flexWrap: "wrap",
+        }}
+      >
+        <label style={{ fontSize: 13, color: MUTED, fontWeight: 700 }}>
+          Showing month:
+        </label>
+        <MonthSelect months={availableMonths} selected={selectedMonth} />
+        <noscript>
+          <button type="submit" style={{ ...btnStyleStatic() }}>
+            Go
+          </button>
+        </noscript>
+      </form>
+
+      <ExportImportBar month={selectedMonth} />
 
       {error ? (
         <div
@@ -165,26 +214,22 @@ export default async function Page() {
                 letterSpacing: 0.5,
               }}
             >
-              Latest Reported (each branch&apos;s most recent valid report)
+              {monthLabel(selectedMonth)} — Latest Reported Day (each branch&apos;s
+              most recent valid report this month)
             </div>
             <div
               style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 18 }}
             >
-              <StatBox
-                label="Revenue"
-                value={fmtCurrency(snapshot["Latest Reported Revenue"])}
-              />
-              <StatBox
-                label="Job Cards"
-                value={fmtNumber(snapshot["Latest Reported Job Cards"])}
-              />
-              <StatBox
-                label="Revenue / JC"
-                value={fmtCurrency(snapshot["Latest Reported Revenue per JC"])}
-              />
+              <StatBox label="Revenue" value={fmtCurrency(summary.todayRevenue)} />
+              <StatBox label="Job Cards" value={fmtNumber(summary.todayVolume)} />
               <StatBox
                 label="Counter Sales"
-                value={fmtCurrency(snapshot["Latest Reported Counter Sales"])}
+                value={fmtCurrency(summary.todayCounterSales)}
+              />
+              <StatBox
+                label="Branches Reporting"
+                value={`${summary.reportedCount}/${summary.totalBranches}`}
+                sub={`in ${monthLabel(selectedMonth)}`}
               />
             </div>
 
@@ -198,26 +243,20 @@ export default async function Page() {
                 letterSpacing: 0.5,
               }}
             >
-              MTD (current month, latest valid snapshot per branch)
+              {monthLabel(selectedMonth)} totals (latest valid snapshot per branch)
             </div>
             <div
               style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 18 }}
             >
+              <StatBox label="Revenue" value={fmtCurrency(summary.mtdRevenue)} />
+              <StatBox label="Job Cards" value={fmtNumber(summary.mtdVolume)} />
               <StatBox
-                label="MTD Revenue"
-                value={fmtCurrency(snapshot["MTD Revenue"])}
+                label="Revenue / JC"
+                value={fmtCurrency(summary.mtdRevenuePerJc)}
               />
               <StatBox
-                label="MTD Job Cards"
-                value={fmtNumber(snapshot["MTD Volume"])}
-              />
-              <StatBox
-                label="MTD Revenue / JC"
-                value={fmtCurrency(snapshot["MTD Revenue per JC"])}
-              />
-              <StatBox
-                label="MTD Counter Sales"
-                value={fmtCurrency(snapshot["MTD Counter Sale Revenue"])}
+                label="Counter Sales"
+                value={fmtCurrency(summary.mtdCounterSales)}
               />
             </div>
 
@@ -235,13 +274,9 @@ export default async function Page() {
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
               <StatBox
-                label="Expected Month-End Closure"
-                value={fmtCurrency(snapshot["Expected Month-End Sales Closure"])}
-                sub="Sum of each branch's own run-rate"
-              />
-              <StatBox
-                label="Reports Received Today"
-                value={snapshot["Reporting Coverage"] || "—"}
+                label={`Expected ${monthLabel(selectedMonth)} Closure`}
+                value={fmtCurrency(summary.expectedMonthEndClosure)}
+                sub="Sum of each branch's own run-rate for this month"
               />
             </div>
           </div>
@@ -265,7 +300,7 @@ export default async function Page() {
                 letterSpacing: 0.5,
               }}
             >
-              Branch-wise
+              Branch-wise — {monthLabel(selectedMonth)}
             </div>
             <div
               style={{
@@ -321,10 +356,24 @@ export default async function Page() {
 
           <div style={{ fontSize: 11, color: MUTED, marginTop: 16 }}>
             Blank/italic cells mean the branch hasn&apos;t reported that figure
-            yet — never treated as zero.
+            for {monthLabel(selectedMonth)} yet — never treated as zero, and
+            never filled in from a different month.
           </div>
         </>
       )}
     </main>
   );
+}
+
+function btnStyleStatic() {
+  return {
+    background: CARD_BG,
+    border: `1px solid ${BORDER}`,
+    color: "#FFFFFF",
+    borderRadius: 8,
+    padding: "8px 14px",
+    fontSize: 13,
+    fontWeight: 700,
+    cursor: "pointer",
+  };
 }
