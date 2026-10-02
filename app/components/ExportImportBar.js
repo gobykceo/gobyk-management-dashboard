@@ -22,7 +22,7 @@ function btnStyle() {
   };
 }
 
-export default function ExportImportBar() {
+export default function ExportImportBar({ month }) {
   const [showImport, setShowImport] = useState(false);
   const [importKey, setImportKey] = useState("");
   const [status, setStatus] = useState(null); // { type: 'ok'|'error', message }
@@ -77,7 +77,10 @@ export default function ExportImportBar() {
         <a href="/api/export/excel" style={{ textDecoration: "none" }}>
           <button style={btnStyle()}>⬇ Download Excel</button>
         </a>
-        <a href="/api/export/pdf" style={{ textDecoration: "none" }}>
+        <a
+          href={month ? `/api/export/pdf?month=${month}` : "/api/export/pdf"}
+          style={{ textDecoration: "none" }}
+        >
           <button style={btnStyle()}>⬇ Download PDF</button>
         </a>
         <button style={btnStyle()} onClick={() => setShowImport((s) => !s)}>
