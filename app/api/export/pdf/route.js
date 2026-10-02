@@ -1,6 +1,18 @@
 import PDFDocument from "pdfkit";
-import { getSnapshot, getBranches } from "../../../../lib/airtable";
+import {
+  getBranchesForMonth,
+  summarizeMonth,
+  currentYyyyMM,
+} from "../../../../lib/airtable";
 import { fmtNumber, fmtDate, fmtLag } from "../../../../lib/format";
+
+function monthLabel(yyyyMM) {
+  const [y, m] = yyyyMM.split("-").map(Number);
+  return new Date(y, m - 1, 1).toLocaleString("en-IN", {
+    month: "long",
+    year: "numeric",
+  });
+}
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -36,7 +48,7 @@ function streamToBuffer(doc) {
   });
 }
 
-function drawHeader(doc, snapshot) {
+function drawHeader(doc, monthLabelText, summary) {
   doc
     .rect(0, 0, doc.page.width, 64)
     .fill(DARK);
@@ -50,7 +62,7 @@ function drawHeader(doc, snapshot) {
     .font("Helvetica")
     .fontSize(9)
     .text(
-      `Consolidated snapshot · generated ${new Date().toLocaleString("en-IN", {
+      `${monthLabelText} snapshot · generated ${new Date().toLocaleString("en-IN", {
         dateStyle: "medium",
         timeStyle: "short",
       })}`,
@@ -62,7 +74,7 @@ function drawHeader(doc, snapshot) {
     .font("Helvetica-Bold")
     .fontSize(10)
     .text(
-      `Reporting coverage today: ${snapshot["Reporting Coverage"] || "—"}`,
+      `Reporting: ${summary.reportedCount}/${summary.totalBranches} branches`,
       doc.page.width - PAGE_MARGIN - 200,
       24,
       { width: 200, align: "right" }
@@ -71,17 +83,17 @@ function drawHeader(doc, snapshot) {
   doc.y = 80;
 }
 
-function summaryBlock(doc, snapshot) {
+function summaryBlock(doc, monthLabelText, summary) {
   const cards = [
-    ["Latest Reported Revenue", fmtCurrency(snapshot["Latest Reported Revenue"])],
-    ["Latest Reported Job Cards", fmtNumber(snapshot["Latest Reported Job Cards"])],
-    ["Latest Reported Rev/JC", fmtCurrency(snapshot["Latest Reported Revenue per JC"])],
-    ["MTD Revenue", fmtCurrency(snapshot["MTD Revenue"])],
-    ["MTD Job Cards", fmtNumber(snapshot["MTD Volume"])],
-    ["MTD Revenue/JC", fmtCurrency(snapshot["MTD Revenue per JC"])],
+    ["Latest Reported Revenue", fmtCurrency(summary.todayRevenue)],
+    ["Latest Reported Job Cards", fmtNumber(summary.todayVolume)],
+    ["Latest Reported Counter Sales", fmtCurrency(summary.todayCounterSales)],
+    [`${monthLabelText} Revenue`, fmtCurrency(summary.mtdRevenue)],
+    [`${monthLabelText} Job Cards`, fmtNumber(summary.mtdVolume)],
+    [`${monthLabelText} Revenue/JC`, fmtCurrency(summary.mtdRevenuePerJc)],
     [
-      "Expected Month-End Closure",
-      fmtCurrency(snapshot["Expected Month-End Sales Closure"]),
+      `Expected ${monthLabelText} Closure`,
+      fmtCurrency(summary.expectedMonthEndClosure),
     ],
   ];
   const usableWidth = doc.page.width - PAGE_MARGIN * 2;
@@ -117,6 +129,10 @@ const COLUMNS = [
   { key: "Branch Name", label: "Branch", width: 95, fmt: (v) => v || "—", align: "left" },
   { key: "Latest Report Date", label: "Latest Report", width: 75, fmt: fmtDate, align: "left" },
   {
+    // Widened from 42 → 52: at 8pt the value "Same day" measures ~36pt,
+    // which didn't fit inside the old 34pt usable width (42 - 8 padding)
+    // and wrapped onto a second line, overlapping the fixed-height row
+    // below it — this was the real cause of the "misaligned" look.
     key: "Reporting Lag (Latest Report, Corrected)",
     label: "Lag",
     width: 52,
@@ -208,10 +224,19 @@ function branchTable(doc, branches) {
   return y;
 }
 
-function footer(doc, snapshot) {
+function footer(doc) {
   const range = doc.bufferedPageRange();
   for (let i = 0; i < range.count; i++) {
     doc.switchToPage(range.start + i);
+    // The footer sits inside the page's own bottom margin (36pt). pdfkit's
+    // text() auto-paginates any time a draw would cross the margin
+    // boundary, even with explicit x/y coordinates — so without this,
+    // every footer line silently pushed itself onto a brand-new blank
+    // page instead of drawing on the page it belongs to (this was also
+    // why the previous PDF looked incomplete: the disclaimer/page-number
+    // calls were each spawning an extra blank trailing page). Zeroing the
+    // bottom margin just for this page, after all its real content is
+    // already drawn, lets the footer draw in place safely.
     doc.page.margins.bottom = 0;
     doc
       .fontSize(7)
@@ -233,9 +258,14 @@ function footer(doc, snapshot) {
   }
 }
 
-export async function GET() {
+export async function GET(request) {
   try {
-    const [snapshot, branches] = await Promise.all([getSnapshot(), getBranches()]);
+    const { searchParams } = new URL(request.url);
+    const month = searchParams.get("month") || currentYyyyMM();
+
+    const branches = await getBranchesForMonth(month);
+    const summary = summarizeMonth(branches);
+    const monthLabelText = monthLabel(month);
 
     const doc = new PDFDocument({
       margin: PAGE_MARGIN,
@@ -245,15 +275,15 @@ export async function GET() {
     });
     const bufferPromise = streamToBuffer(doc);
 
-    drawHeader(doc, snapshot);
-    summaryBlock(doc, snapshot);
+    drawHeader(doc, monthLabelText, summary);
+    summaryBlock(doc, monthLabelText, summary);
     branchTable(doc, branches);
-    footer(doc, snapshot);
+    footer(doc);
 
     doc.end();
     const buffer = await bufferPromise;
 
-    const filename = `gobyk-dashboard-snapshot-${new Date().toISOString().slice(0, 10)}.pdf`;
+    const filename = `gobyk-dashboard-${month}.pdf`;
     return new Response(buffer, {
       headers: {
         "Content-Type": "application/pdf",
